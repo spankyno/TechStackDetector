@@ -40,7 +40,7 @@ export async function getCached(url: string): Promise<AnalysisResult | null> {
   const redis = await getRedis()
   if (redis) {
     try {
-      const raw = await redis.get<string>(key)
+      const raw = await redis.get(key)
       if (raw) return typeof raw === 'string' ? JSON.parse(raw) : raw
     } catch {
       // fall through to memory
