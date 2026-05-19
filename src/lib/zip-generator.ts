@@ -98,7 +98,7 @@ function generatePackageJson(slug: string): string {
       'type-check': 'tsc --noEmit',
     },
     dependencies: {
-      next": "15.3.0',
+      next: '15.3.0',
       react: '^19.0.0',
       'react-dom': '^19.0.0',
       'class-variance-authority': '^0.7.0',
@@ -111,7 +111,7 @@ function generatePackageJson(slug: string): string {
       typescript: '^5.6.3',
       '@types/react': '^19.0.0',
       '@types/node': '^22.0.0',
-      'eslint-config-next": "15.3.0',
+      'eslint-config-next': '15.3.0',
     },
   }, null, 2)
 }
