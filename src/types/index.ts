@@ -260,6 +260,7 @@ export interface AnalyzeStreamEvent {
   total?: number
   label?: string
   data?: AnalysisResult
+  cached?: boolean
   error?: string
 }
 
