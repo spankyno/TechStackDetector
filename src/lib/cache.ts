@@ -13,14 +13,15 @@ function cacheKey(url: string): string {
   return `dca:${url.toLowerCase().replace(/\/$/, '')}`
 }
 
-// ── Redis client (optional) ───────────────────────────────────────────────────
+// ── Redis client (optional — add @upstash/redis to deps to enable) ───────────
 
 async function getRedis() {
   if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
     return null
   }
   try {
-    const { Redis } = await import('@upstash/redis')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Redis } = require('@upstash/redis')
     return new Redis({
       url: process.env.UPSTASH_REDIS_REST_URL,
       token: process.env.UPSTASH_REDIS_REST_TOKEN,
