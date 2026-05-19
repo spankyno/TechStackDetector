@@ -134,14 +134,14 @@ async function scrapeWithBrowserless(url: string, start: number): Promise<Scrape
 
     // Desktop screenshot
     const screenshotBuffer = process.env.ENABLE_SCREENSHOT !== 'false'
-      ? await page.screenshot({ fullPage: false, type: 'webp', quality: 80 })
+      ? await page.screenshot({ fullPage: false, type: 'jpeg', quality: 80 })
       : null
 
     // Mobile screenshot
     await page.setViewportSize({ width: 390, height: 844 })
     await page.waitForTimeout(500)
     const screenshotMobileBuffer = process.env.ENABLE_SCREENSHOT !== 'false'
-      ? await page.screenshot({ fullPage: false, type: 'webp', quality: 80 })
+      ? await page.screenshot({ fullPage: false, type: 'jpeg', quality: 80 })
       : null
 
     await context.close()

@@ -34,10 +34,10 @@ export async function analyzeWithClaude(
     duration: scraped.loadTime,
     scrapedAt: new Date().toISOString(),
     screenshotUrl: scraped.screenshotBase64
-      ? `data:image/webp;base64,${scraped.screenshotBase64}`
+      ? `data:image/jpeg;base64,${scraped.screenshotBase64}`
       : undefined,
     screenshotMobileUrl: scraped.screenshotMobileBase64
-      ? `data:image/webp;base64,${scraped.screenshotMobileBase64}`
+      ? `data:image/jpeg;base64,${scraped.screenshotMobileBase64}`
       : undefined,
     ...parsed,
   }
