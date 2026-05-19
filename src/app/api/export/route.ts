@@ -17,6 +17,7 @@ export async function POST(req: NextRequest) {
     }
 
     const buffer = await generateProjectZip(result)
+    const bytes = new Uint8Array(buffer)
 
     const slug = result.url
       .replace(/https?:\/\//, '')
@@ -24,12 +25,12 @@ export async function POST(req: NextRequest) {
       .replace(/[^a-z0-9]/gi, '-')
       .toLowerCase()
 
-    return new NextResponse(buffer, {
+    return new NextResponse(bytes, {
       status: 200,
       headers: {
         'Content-Type': 'application/zip',
         'Content-Disposition': `attachment; filename="${slug}-designclone.zip"`,
-        'Content-Length': buffer.length.toString(),
+        'Content-Length': bytes.length.toString(),
         'Cache-Control': 'no-store',
       },
     })
