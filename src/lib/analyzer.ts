@@ -1,229 +1,661 @@
 // src/lib/analyzer.ts
-// Sends scraped data to Claude for deep design + infra + security analysis
+// Pure DOM-based analysis — no AI, no API keys required.
+// Extracts design tokens, technologies, and security data from real scraped data.
 
-import Anthropic from '@anthropic-ai/sdk'
-import type { ScrapedData, AnalysisResult } from '@/types'
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+import type { ScrapedData, AnalysisResult, DetectedFont, Technology, Vulnerability, SecurityHeaders } from '@/types'
 
 export async function analyzeWithClaude(
   scraped: ScrapedData,
-  creativeMode = false
+  _creativeMode = false
 ): Promise<AnalysisResult> {
-  const systemPrompt = buildSystemPrompt(creativeMode)
-  const userPrompt = buildUserPrompt(scraped)
+  const start = Date.now()
 
-  const message = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 4096,
-    system: systemPrompt,
-    messages: [{ role: 'user', content: userPrompt }],
-  })
-
-  const raw = message.content
-    .filter((b) => b.type === 'text')
-    .map((b) => (b as { type: 'text'; text: string }).text)
-    .join('')
-
-  const parsed = parseJSON(raw)
+  const colors = extractColors(scraped)
+  const typography = extractTypography(scraped)
+  const fonts = extractFonts(scraped)
+  const spacing = extractSpacing(scraped)
+  const effects = extractEffects(scraped)
+  const technologies = detectTechnologies(scraped)
+  const framework = detectFramework(scraped, technologies)
+  const infrastructure = extractInfrastructure(scraped, technologies)
+  const security = extractSecurity(scraped)
+  const components = detectComponents(scraped)
+  const style = detectStyle(scraped, colors, effects)
 
   return {
     id: crypto.randomUUID(),
     url: scraped.url,
     analyzedAt: new Date().toISOString(),
-    duration: scraped.loadTime,
+    duration: Date.now() - start,
     scrapedAt: new Date().toISOString(),
+    framework: framework.name,
+    frameworkConfidence: framework.confidence,
+    style,
+    styleNotes: buildStyleNotes(style, colors, typography),
+    colors,
+    typography,
+    spacing,
+    effects,
+    components,
+    fonts,
+    infrastructure,
+    security,
+    technologies,
+    nextjsCode: '',
+    htmlCode: '',
+    vibePrompt: '',
     screenshotUrl: scraped.screenshotBase64
       ? `data:image/jpeg;base64,${scraped.screenshotBase64}`
       : undefined,
     screenshotMobileUrl: scraped.screenshotMobileBase64
       ? `data:image/jpeg;base64,${scraped.screenshotMobileBase64}`
       : undefined,
-    ...parsed,
   }
 }
 
-// ── Prompt builders ───────────────────────────────────────────────────────────
+// ── Color extraction ──────────────────────────────────────────────────────────
 
-function buildSystemPrompt(creativeMode: boolean): string {
-  return `You are DesignClone AI — the most advanced web design and infrastructure analysis engine of 2026. You receive real scraped DOM data, computed styles, response headers, and page metadata, then produce a complete JSON analysis.
+function extractColors(scraped: ScrapedData) {
+  const cs = scraped.computedStyles
 
-Return ONLY a raw JSON object. No markdown, no backticks, no explanation.
+  // Convert rgb() to hex
+  const toHex = (rgb: string): string => {
+    const m = rgb.match(/\d+/g)
+    if (!m || m.length < 3) return '#000000'
+    return '#' + m.slice(0, 3).map(n => parseInt(n).toString(16).padStart(2, '0')).join('')
+  }
 
-${creativeMode
-  ? 'CREATIVE MODE: Tastefully enhance the design while preserving brand identity.'
-  : 'FAITHFUL MODE: Replicate as closely as possible to the original.'
+  const rawColors = scraped.colors.map(toHex).filter(h => h !== '#000000' && h !== '#ffffff')
+  const unique = [...new Set(rawColors)].slice(0, 12)
+
+  const bg = cs.bodyBg ? toHex(cs.bodyBg) : '#ffffff'
+  const text = cs.bodyColor ? toHex(cs.bodyColor) : '#000000'
+
+  // Heuristic: darkest frequent color = primary, most saturated = accent
+  const primary = unique[0] || '#000000'
+  const accent = unique.find(h => {
+    const r = parseInt(h.slice(1, 3), 16)
+    const g = parseInt(h.slice(3, 5), 16)
+    const b = parseInt(h.slice(5, 7), 16)
+    const max = Math.max(r, g, b), min = Math.min(r, g, b)
+    return (max - min) > 80
+  }) || unique[1] || '#333333'
+
+  return {
+    primary,
+    secondary: unique[2] || '#555555',
+    background: bg,
+    surface: unique[3] || '#f5f5f5',
+    text,
+    textMuted: unique[4] || '#888888',
+    accent,
+    border: unique[5] || '#e5e5e5',
+    palette: unique.slice(0, 6),
+  }
 }
 
-JSON schema (all fields required):
-{
-  "framework": "Next.js|Webflow|Framer|Squarespace|Nuxt|Astro|SvelteKit|Remix|Custom|Unknown",
-  "frameworkConfidence": 0.0-1.0,
-  "style": "minimal|glassmorphism|brutalist|editorial|corporate|playful|luxury|technical|neomorphic",
-  "styleNotes": "2-sentence visual identity description",
+// ── Typography extraction ─────────────────────────────────────────────────────
 
-  "colors": {
-    "primary":"#hex","secondary":"#hex","background":"#hex","surface":"#hex",
-    "text":"#hex","textMuted":"#hex","accent":"#hex","border":"#hex",
-    "palette":["#hex","#hex","#hex","#hex","#hex","#hex"]
-  },
-  "typography": {
-    "primaryFont":"exact name","secondaryFont":"name or null","monoFont":"name or null",
-    "headingSize":"clamp(32px,5vw,64px)","bodySize":"15px",
-    "fontWeight":"300/400/600","lineHeight":"1.6","letterSpacing":"-0.5px"
-  },
-  "spacing": {
-    "baseUnit":"8px","containerMaxWidth":"1200px",
-    "sectionPadding":"96px 0","componentGap":"24px"
-  },
-  "effects": {
-    "borderRadius":"8px","boxShadow":"none|subtle|medium|strong",
-    "backdropBlur":false,"gradients":true,"animations":"none|subtle|moderate|heavy",
-    "hasGlassmorphism":false,"hasDarkMode":true,"hasNoise":false
-  },
-  "components": ["nav","hero","cards","pricing","footer"],
+function extractTypography(scraped: ScrapedData) {
+  const cs = scraped.computedStyles
+  const cleanFont = (f: string) => f?.split(',')[0].replace(/['"]/g, '').trim() || 'sans-serif'
 
-  "fonts": [
-    {
-      "family":"exact Google Fonts name",
-      "role":"primary|secondary|mono|display",
-      "weights":["300","400","500","600","700"],
-      "isGoogleFont":true,
-      "importUrl":"https://fonts.googleapis.com/css2?family=Name:wght@300;400;500;600;700&display=swap",
-      "cssVariable":"--font-primary",
-      "tailwindKey":"sans|serif|mono|display",
-      "category":"sans-serif|serif|monospace|display",
-      "notes":"Why this font suits this brand"
+  return {
+    primaryFont: cleanFont(cs.bodyFont || cs.h1Font || ''),
+    secondaryFont: cs.h1Font && cs.h1Font !== cs.bodyFont ? cleanFont(cs.h1Font) : null,
+    monoFont: scraped.fonts.find(f => /mono|code|courier/i.test(f)) || null,
+    headingSize: cs.h1Size || 'clamp(32px, 5vw, 64px)',
+    bodySize: cs.bodyFontSize || '16px',
+    fontWeight: cs.h1Weight ? `${cs.bodyFont ? '400' : ''}/${cs.h1Weight}` : '400/700',
+    lineHeight: cs.bodyLineHeight || '1.6',
+    letterSpacing: cs.h1LetterSpacing || 'normal',
+  }
+}
+
+// ── Font detection ────────────────────────────────────────────────────────────
+
+function extractFonts(scraped: ScrapedData): DetectedFont[] {
+  const googleFonts: DetectedFont[] = []
+
+  // Parse Google Fonts links from stylesheets
+  for (const sheet of scraped.stylesheets) {
+    if (!sheet.includes('fonts.googleapis.com')) continue
+    const match = sheet.match(/family=([^&]+)/)
+    if (!match) continue
+
+    const families = decodeURIComponent(match[1]).split('|')
+    for (const fam of families) {
+      const [name, variants] = fam.split(':')
+      const clean = name.replace(/\+/g, ' ').trim()
+      const weights = variants
+        ? variants.replace('wght@', '').split(';').filter(w => /^\d+$/.test(w))
+        : ['400']
+      const slug = clean.replace(/\s+/g, '+')
+      const isSerif = /serif/i.test(clean)
+      const isMono = /mono|code/i.test(clean)
+
+      googleFonts.push({
+        family: clean,
+        role: googleFonts.length === 0 ? 'primary' : googleFonts.length === 1 ? 'secondary' : 'mono',
+        weights: weights.length ? weights : ['300', '400', '500', '600', '700'],
+        isGoogleFont: true,
+        importUrl: `https://fonts.googleapis.com/css2?family=${slug}:wght@${(weights.length ? weights : ['300','400','500','600','700']).join(';')}&display=swap`,
+        cssVariable: `--font-${clean.toLowerCase().replace(/\s+/g, '-')}`,
+        tailwindKey: isMono ? 'mono' : isSerif ? 'serif' : 'sans',
+        category: isMono ? 'monospace' : isSerif ? 'serif' : 'sans-serif',
+        notes: `Detected from Google Fonts stylesheet`,
+      })
     }
-  ],
-
-  "infrastructure": {
-    "hosting":{"provider":"string","confidence":0.9,"region":"string","type":"string","notes":"string"},
-    "cdn":{"provider":"string","confidence":0.85,"features":["string"]},
-    "authentication":{"provider":"string","confidence":0.8,"methods":["string"],"hasSSO":false,"hasMFA":false,"sessionStrategy":"string","notes":"string"},
-    "database":{"primary":"string","primaryConfidence":0.75,"orm":"string","caching":"string","searchEngine":"string","hasRealtime":false,"notes":"string"},
-    "apis":{"pattern":"REST|GraphQL|tRPC","thirdParty":[{"name":"string","category":"string","confidence":0.9}],"internalApiPrefix":"string","hasWebhooks":false},
-    "monitoring":{"errorTracking":"string","analytics":"string","logging":"string","uptime":"string","performance":"string"},
-    "cicd":{"platform":"string","repository":"string","deploymentStrategy":"string","hasAutomatedTests":false},
-    "email":{"provider":"string","confidence":0.7},
-    "featureFlags":"string",
-    "internationalisation":false,
-    "mobileStrategy":"Responsive|PWA|Native|Unknown",
-    "accessibilityScore":0
-  },
-
-  "security": {
-    "overallScore":0,
-    "scoreLabel":"Excellent|Good|Fair|Poor|Critical",
-    "riskLevel":"Low|Medium|High|Critical",
-    "headers": {
-      "contentSecurityPolicy":"present|partial|missing",
-      "strictTransportSecurity":"present|missing",
-      "xFrameOptions":"present|missing",
-      "xContentTypeOptions":"present|missing",
-      "referrerPolicy":"present|missing",
-      "permissionsPolicy":"present|missing",
-      "crossOriginOpenerPolicy":"present|missing",
-      "crossOriginResourcePolicy":"present|missing"
-    },
-    "ssl":{"grade":"A+|A|B|C|F|Unknown","provider":"string","hsts":true,"hstsMaxAge":"31536000","tlsVersion":"1.3"},
-    "rateLimit":"detected|likely|not detected",
-    "botProtection":"string",
-    "ddosProtection":"string",
-    "vulnerabilities": [
-      {
-        "id":"VULN-001",
-        "title":"string",
-        "severity":"critical|high|medium|low|info",
-        "category":"OWASP A01|OWASP A02|OWASP A03|OWASP A04|OWASP A05|OWASP A06|OWASP A07|OWASP A08|OWASP A09|OWASP A10|Header Missing|TLS Issue|Information Disclosure|Supply Chain|Privacy|Configuration",
-        "description":"Clear technical description",
-        "evidence":"What in the scraped data indicates this",
-        "cvss":"0.0",
-        "cwe":"CWE-XXX",
-        "affected":"Affected surface",
-        "solution":"Specific actionable fix with code example",
-        "references":["string"]
-      }
-    ],
-    "recommendations":["string"]
-  },
-
-  "technologies":[{"name":"string","confidence":0.9,"category":"string"}],
-  "nextjsCode":"Complete Next.js 15 + Tailwind 4 page.tsx (120-150 lines). Include Google Fonts import. Full homepage with nav, hero, features section, CTA, footer. Real brand copy from the scraped title and meta. Actual working Tailwind classes using the detected colors.",
-  "htmlCode":"Complete standalone HTML (100-120 lines) with Tailwind CDN and Google Fonts link. Same layout.",
-  "vibePrompt":"Ultra-detailed 500-600 word vibe coding prompt. 7 sections: 1) Visual soul, 2) Color philosophy (exact hex), 3) Typography (exact font names + import URLs), 4) Spacing doctrine, 5) Component language, 6) Motion personality, 7) Step-by-step recreation guide."
-}
-
-IMPORTANT: Use the actual response headers provided to accurately assess security headers. Use the detected scripts and stylesheets to identify technologies. Use the computed styles to extract real typography values. Generate 10-14 vulnerabilities covering OWASP Top 10, headers, TLS, info disclosure, supply chain, and privacy. Each vulnerability MUST have a specific, actionable solution.`
-}
-
-function buildUserPrompt(scraped: ScrapedData): string {
-  // Build a condensed but rich context from scraped data
-  const headerSummary = Object.entries(scraped.responseHeaders)
-    .map(([k, v]) => `  ${k}: ${v}`)
-    .join('\n')
-
-  const scriptsSummary = scraped.scripts
-    .map((s) => s.replace(/^https?:\/\//, '').split('?')[0])
-    .slice(0, 20)
-    .join(', ')
-
-  const stylesSummary = scraped.stylesheets
-    .map((s) => s.replace(/^https?:\/\//, '').split('?')[0])
-    .slice(0, 10)
-    .join(', ')
-
-  // Extract key HTML sections (head + first ~10kb of body)
-  const htmlSnippet = scraped.html.slice(0, 12_000)
-
-  return `Analyze this website: ${scraped.url}
-
-## Real scraped data
-
-### Page info
-- Title: ${scraped.title}
-- Status code: ${scraped.statusCode}
-- Load time: ${scraped.loadTime}ms
-
-### Response headers (REAL — use for security analysis)
-${headerSummary || '  (no headers captured — fallback mode)'}
-
-### Computed styles (REAL)
-${Object.entries(scraped.computedStyles).map(([k, v]) => `  ${k}: ${v}`).join('\n') || '  (no computed styles — fallback mode)'}
-
-### Detected fonts
-${scraped.fonts.slice(0, 15).join(', ') || 'none detected'}
-
-### Detected colors (top 15)
-${scraped.colors.slice(0, 15).join(', ') || 'none detected'}
-
-### Scripts loaded
-${scriptsSummary || 'none'}
-
-### Stylesheets
-${stylesSummary || 'none'}
-
-### Meta tags
-${Object.entries(scraped.metaTags).slice(0, 15).map(([k, v]) => `  ${k}: ${v.slice(0, 100)}`).join('\n') || '  none'}
-
-### HTML snippet (head + opening body)
-\`\`\`html
-${htmlSnippet}
-\`\`\`
-
-Based on ALL this real data, generate the complete analysis JSON.`
-}
-
-// ── JSON parser ───────────────────────────────────────────────────────────────
-
-function parseJSON(raw: string): Omit<AnalysisResult, 'id' | 'url' | 'analyzedAt' | 'duration' | 'scrapedAt' | 'screenshotUrl' | 'screenshotMobileUrl'> {
-  const cleaned = raw.replace(/```json\n?|```\n?/g, '').trim()
-
-  try {
-    return JSON.parse(cleaned)
-  } catch {
-    const match = cleaned.match(/\{[\s\S]*\}/)
-    if (!match) throw new Error('No valid JSON in Claude response')
-    return JSON.parse(match[0])
   }
+
+  // Fallback: fonts from computed styles
+  if (!googleFonts.length) {
+    for (const font of scraped.fonts.slice(0, 3)) {
+      if (['system-ui','sans-serif','serif','monospace','inherit'].includes(font)) continue
+      const isMono = /mono|code/i.test(font)
+      const isSerif = /serif/i.test(font)
+      const slug = font.replace(/\s+/g, '+')
+      googleFonts.push({
+        family: font,
+        role: googleFonts.length === 0 ? 'primary' : 'secondary',
+        weights: ['400', '700'],
+        isGoogleFont: false,
+        importUrl: `https://fonts.googleapis.com/css2?family=${slug}:wght@400;700&display=swap`,
+        cssVariable: `--font-${font.toLowerCase().replace(/\s+/g, '-')}`,
+        tailwindKey: isMono ? 'mono' : isSerif ? 'serif' : 'sans',
+        category: isMono ? 'monospace' : isSerif ? 'serif' : 'sans-serif',
+        notes: `Detected from computed styles`,
+      })
+    }
+  }
+
+  return googleFonts.slice(0, 4)
+}
+
+// ── Spacing ───────────────────────────────────────────────────────────────────
+
+function extractSpacing(scraped: ScrapedData) {
+  // Try to detect max-width from HTML patterns
+  const widthMatch = scraped.html.match(/max-w(?:idth)?[:\s-]+(\d{3,4}px|\d+rem)/i)
+  const containerMatch = scraped.html.match(/container.*?(\d{3,4}px)/i)
+
+  return {
+    baseUnit: '8px',
+    containerMaxWidth: widthMatch?.[1] || containerMatch?.[1] || '1200px',
+    sectionPadding: '80px 0',
+    componentGap: '24px',
+  }
+}
+
+// ── Effects ───────────────────────────────────────────────────────────────────
+
+function extractEffects(scraped: ScrapedData) {
+  const html = scraped.html.toLowerCase()
+  const hasBlur = html.includes('backdrop-blur') || html.includes('backdrop_blur')
+  const hasGlass = hasBlur && html.includes('rgba')
+  const hasGradient = html.includes('gradient')
+  const hasDark = html.includes('dark:') || html.includes('dark-mode') || html.includes('prefers-color-scheme')
+  const hasNoise = html.includes('noise') || html.includes('grain')
+
+  const radiusMatch = scraped.html.match(/border-radius:\s*(\d+px|\d+rem)/i)
+    || scraped.html.match(/rounded-(\w+)/i)
+
+  let borderRadius = '8px'
+  if (radiusMatch) {
+    const r = radiusMatch[1]
+    if (r === 'full') borderRadius = '9999px'
+    else if (r === 'none') borderRadius = '0px'
+    else if (r === 'sm') borderRadius = '4px'
+    else if (r === 'lg') borderRadius = '12px'
+    else if (r === 'xl') borderRadius = '16px'
+    else borderRadius = r
+  }
+
+  const hasAnimation = html.includes('transition') || html.includes('animation') || html.includes('framer')
+  const hasHeavyAnim = html.includes('gsap') || html.includes('lottie') || html.includes('three')
+
+  return {
+    borderRadius,
+    boxShadow: html.includes('shadow-xl') || html.includes('shadow-lg') ? 'strong' as const
+      : html.includes('shadow') ? 'subtle' as const : 'none' as const,
+    backdropBlur: hasBlur,
+    gradients: hasGradient,
+    animations: hasHeavyAnim ? 'heavy' as const : hasAnimation ? 'moderate' as const : 'none' as const,
+    hasGlassmorphism: hasGlass,
+    hasDarkMode: hasDark,
+    hasNoise,
+  }
+}
+
+// ── Technology detection ──────────────────────────────────────────────────────
+
+function detectTechnologies(scraped: ScrapedData): Technology[] {
+  const techs: Technology[] = []
+  const scripts = scraped.scripts.join(' ').toLowerCase()
+  const html = scraped.html.toLowerCase()
+  const sheets = scraped.stylesheets.join(' ').toLowerCase()
+  const headers = scraped.responseHeaders
+
+  const add = (name: string, confidence: number, category: string) =>
+    techs.push({ name, confidence, category })
+
+  // Frameworks
+  if (scripts.includes('/_next/') || html.includes('__next')) add('Next.js', 0.95, 'Framework')
+  else if (scripts.includes('nuxt') || html.includes('__nuxt')) add('Nuxt.js', 0.92, 'Framework')
+  else if (html.includes('data-reactroot') || html.includes('react')) add('React', 0.80, 'Framework')
+  else if (scripts.includes('vue') || html.includes('__vue')) add('Vue.js', 0.85, 'Framework')
+  else if (scripts.includes('svelte')) add('SvelteKit', 0.88, 'Framework')
+  else if (html.includes('astro') || scripts.includes('astro')) add('Astro', 0.85, 'Framework')
+
+  // CSS
+  if (html.includes('class="') && /\b(flex|grid|px-|py-|text-|bg-|rounded|border)\b/.test(html)) add('Tailwind CSS', 0.90, 'CSS')
+  if (sheets.includes('bootstrap')) add('Bootstrap', 0.88, 'CSS')
+  if (sheets.includes('fonts.googleapis.com')) add('Google Fonts', 0.99, 'Fonts')
+
+  // CMS / Platforms
+  if (html.includes('wp-content') || html.includes('wordpress')) add('WordPress', 0.95, 'CMS')
+  if (html.includes('webflow')) add('Webflow', 0.92, 'Platform')
+  if (html.includes('framer')) add('Framer', 0.90, 'Platform')
+  if (html.includes('shopify')) add('Shopify', 0.95, 'E-commerce')
+
+  // Analytics
+  if (scripts.includes('google-analytics') || scripts.includes('gtag')) add('Google Analytics', 0.95, 'Analytics')
+  if (scripts.includes('plausible')) add('Plausible', 0.95, 'Analytics')
+  if (scripts.includes('segment')) add('Segment', 0.88, 'Analytics')
+  if (scripts.includes('posthog')) add('PostHog', 0.90, 'Analytics')
+  if (scripts.includes('mixpanel')) add('Mixpanel', 0.88, 'Analytics')
+
+  // Animation
+  if (scripts.includes('framer-motion') || scripts.includes('framer_motion')) add('Framer Motion', 0.88, 'Animation')
+  if (scripts.includes('gsap')) add('GSAP', 0.92, 'Animation')
+  if (scripts.includes('three')) add('Three.js', 0.88, 'Animation')
+  if (scripts.includes('lottie')) add('Lottie', 0.85, 'Animation')
+
+  // Payments
+  if (scripts.includes('stripe')) add('Stripe', 0.95, 'Payments')
+  if (scripts.includes('paddle')) add('Paddle', 0.88, 'Payments')
+
+  // Support / chat
+  if (scripts.includes('intercom')) add('Intercom', 0.92, 'Support')
+  if (scripts.includes('crisp')) add('Crisp', 0.90, 'Support')
+  if (scripts.includes('zendesk')) add('Zendesk', 0.88, 'Support')
+
+  // Hosting signals from headers
+  const server = headers['server'] || ''
+  const via = headers['via'] || ''
+  const xPowered = headers['x-powered-by'] || ''
+  if (server.includes('vercel') || headers['x-vercel-id']) add('Vercel', 0.95, 'Hosting')
+  if (server.includes('cloudflare') || headers['cf-ray']) add('Cloudflare', 0.95, 'CDN')
+  if (xPowered.includes('next')) add('Next.js', 0.90, 'Framework')
+
+  // Dedup by name
+  const seen = new Set<string>()
+  return techs.filter(t => { if (seen.has(t.name)) return false; seen.add(t.name); return true })
+    .sort((a, b) => b.confidence - a.confidence)
+}
+
+// ── Framework detection ───────────────────────────────────────────────────────
+
+function detectFramework(scraped: ScrapedData, techs: Technology[]) {
+  const frameworks = ['Next.js', 'Nuxt.js', 'SvelteKit', 'Astro', 'Remix', 'Webflow', 'Framer', 'WordPress']
+  for (const fw of frameworks) {
+    const t = techs.find(t => t.name === fw)
+    if (t) return { name: fw, confidence: t.confidence }
+  }
+
+  const html = scraped.html.toLowerCase()
+  if (html.includes('gatsby')) return { name: 'Gatsby', confidence: 0.82 }
+  if (html.includes('squarespace')) return { name: 'Squarespace', confidence: 0.90 }
+  if (html.includes('wix')) return { name: 'Wix', confidence: 0.90 }
+
+  return { name: 'Custom', confidence: 0.50 }
+}
+
+// ── Infrastructure ────────────────────────────────────────────────────────────
+
+function extractInfrastructure(scraped: ScrapedData, techs: Technology[]) {
+  const h = scraped.responseHeaders
+  const scripts = scraped.scripts.join(' ').toLowerCase()
+
+  // Hosting
+  let hostingProvider = 'Unknown'
+  let hostingConfidence = 0.5
+  if (h['x-vercel-id'] || (h['server'] || '').includes('vercel')) { hostingProvider = 'Vercel'; hostingConfidence = 0.95 }
+  else if ((h['server'] || '').includes('cloudflare')) { hostingProvider = 'Cloudflare Pages'; hostingConfidence = 0.88 }
+  else if (h['x-amz-cf-id'] || h['x-amz-request-id']) { hostingProvider = 'AWS'; hostingConfidence = 0.85 }
+  else if ((h['server'] || '').includes('netlify') || h['x-nf-request-id']) { hostingProvider = 'Netlify'; hostingConfidence = 0.92 }
+  else if ((h['server'] || '').includes('github')) { hostingProvider = 'GitHub Pages'; hostingConfidence = 0.88 }
+
+  // CDN
+  let cdnProvider = 'Unknown'
+  if (h['cf-ray']) cdnProvider = 'Cloudflare'
+  else if (h['x-amz-cf-id']) cdnProvider = 'AWS CloudFront'
+  else if (h['x-vercel-id']) cdnProvider = 'Vercel Edge'
+  else if (h['x-fastly-request-id']) cdnProvider = 'Fastly'
+
+  // Auth signals
+  let authProvider = 'Unknown'
+  if (scripts.includes('clerk')) authProvider = 'Clerk'
+  else if (scripts.includes('auth0')) authProvider = 'Auth0'
+  else if (scripts.includes('supabase')) authProvider = 'Supabase Auth'
+  else if (scripts.includes('firebase')) authProvider = 'Firebase Auth'
+  else if (scripts.includes('nextauth') || scripts.includes('next-auth')) authProvider = 'NextAuth.js'
+
+  // DB signals
+  let dbPrimary = 'Unknown'
+  if (scripts.includes('supabase')) dbPrimary = 'Supabase (PostgreSQL)'
+  else if (scripts.includes('planetscale')) dbPrimary = 'PlanetScale (MySQL)'
+  else if (scripts.includes('firebase')) dbPrimary = 'Firebase Firestore'
+  else if (scripts.includes('mongodb')) dbPrimary = 'MongoDB'
+  else if (scripts.includes('neon')) dbPrimary = 'Neon (PostgreSQL)'
+
+  // Analytics
+  const analyticsMap: Record<string, string> = {
+    'google-analytics': 'Google Analytics 4',
+    'gtag': 'Google Analytics 4',
+    'plausible': 'Plausible Analytics',
+    'segment': 'Segment',
+    'posthog': 'PostHog',
+    'mixpanel': 'Mixpanel',
+    'amplitude': 'Amplitude',
+  }
+  let analytics = 'Not detected'
+  for (const [key, val] of Object.entries(analyticsMap)) {
+    if (scripts.includes(key)) { analytics = val; break }
+  }
+
+  // Error tracking
+  let errorTracking = 'Not detected'
+  if (scripts.includes('sentry')) errorTracking = 'Sentry'
+  else if (scripts.includes('bugsnag')) errorTracking = 'Bugsnag'
+  else if (scripts.includes('datadog')) errorTracking = 'Datadog'
+
+  return {
+    hosting: {
+      provider: hostingProvider,
+      confidence: hostingConfidence,
+      region: h['x-vercel-id']?.split('::')[0] || 'Unknown',
+      type: hostingProvider === 'Vercel' ? 'Serverless' : 'Unknown',
+      notes: `Detected from response headers`,
+    },
+    cdn: {
+      provider: cdnProvider,
+      confidence: cdnProvider !== 'Unknown' ? 0.90 : 0.3,
+      features: cdnProvider !== 'Unknown' ? ['Edge caching', 'DDoS protection', 'Global network'] : [],
+    },
+    authentication: {
+      provider: authProvider,
+      confidence: authProvider !== 'Unknown' ? 0.82 : 0.2,
+      methods: authProvider !== 'Unknown' ? ['Email/password', 'OAuth'] : [],
+      hasSSO: scripts.includes('saml') || scripts.includes('sso'),
+      hasMFA: scripts.includes('mfa') || scripts.includes('totp'),
+      sessionStrategy: 'Unknown',
+      notes: `Detected from loaded scripts`,
+    },
+    database: {
+      primary: dbPrimary,
+      primaryConfidence: dbPrimary !== 'Unknown' ? 0.75 : 0.2,
+      orm: scripts.includes('prisma') ? 'Prisma' : scripts.includes('drizzle') ? 'Drizzle' : 'Unknown',
+      caching: scripts.includes('redis') || scripts.includes('upstash') ? 'Redis' : 'Not detected',
+      searchEngine: scripts.includes('algolia') ? 'Algolia' : scripts.includes('typesense') ? 'Typesense' : 'Not detected',
+      hasRealtime: scripts.includes('supabase') || scripts.includes('pusher') || scripts.includes('ably'),
+      notes: `Detected from loaded scripts`,
+    },
+    apis: {
+      pattern: scripts.includes('graphql') ? 'GraphQL' : scripts.includes('trpc') ? 'tRPC' : 'REST',
+      thirdParty: techs
+        .filter(t => ['Payments', 'Support', 'Analytics'].includes(t.category))
+        .map(t => ({ name: t.name, category: t.category, confidence: t.confidence })),
+      internalApiPrefix: '/api',
+      hasWebhooks: false,
+    },
+    monitoring: {
+      errorTracking,
+      analytics,
+      logging: scripts.includes('datadog') ? 'Datadog' : scripts.includes('axiom') ? 'Axiom' : 'Not detected',
+      uptime: 'Not detected',
+      performance: h['x-vercel-id'] ? 'Vercel Speed Insights' : 'Not detected',
+    },
+    cicd: {
+      platform: hostingProvider === 'Vercel' ? 'Vercel' : hostingProvider === 'Netlify' ? 'Netlify' : 'Unknown',
+      repository: 'GitHub',
+      deploymentStrategy: hostingProvider === 'Vercel' ? 'Preview deployments' : 'Unknown',
+      hasAutomatedTests: false,
+    },
+    email: {
+      provider: scripts.includes('resend') ? 'Resend'
+        : scripts.includes('sendgrid') ? 'SendGrid'
+        : scripts.includes('postmark') ? 'Postmark' : 'Not detected',
+      confidence: 0.7,
+    },
+    featureFlags: scripts.includes('launchdarkly') ? 'LaunchDarkly'
+      : scripts.includes('statsig') ? 'Statsig'
+      : scripts.includes('posthog') ? 'PostHog Flags' : 'Not detected',
+    internationalisation: scraped.html.includes('lang=') && scraped.html.includes('hreflang'),
+    mobileStrategy: 'Responsive' as const,
+    accessibilityScore: 0,
+  }
+}
+
+// ── Security ──────────────────────────────────────────────────────────────────
+
+function extractSecurity(scraped: ScrapedData) {
+  const h = scraped.responseHeaders
+  const get = (key: string) => h[key.toLowerCase()] || ''
+
+  const csp = get('content-security-policy')
+  const hsts = get('strict-transport-security')
+  const xfo = get('x-frame-options')
+  const xcto = get('x-content-type-options')
+  const rp = get('referrer-policy')
+  const pp = get('permissions-policy')
+  const coop = get('cross-origin-opener-policy')
+  const corp = get('cross-origin-resource-policy')
+
+  const headers: SecurityHeaders = {
+    contentSecurityPolicy: csp ? (csp.includes('unsafe-inline') ? 'partial' : 'present') : 'missing',
+    strictTransportSecurity: hsts ? 'present' : 'missing',
+    xFrameOptions: xfo ? 'present' : 'missing',
+    xContentTypeOptions: xcto ? 'present' : 'missing',
+    referrerPolicy: rp ? 'present' : 'missing',
+    permissionsPolicy: pp ? 'present' : 'missing',
+    crossOriginOpenerPolicy: coop ? 'present' : 'missing',
+    crossOriginResourcePolicy: corp ? 'present' : 'missing',
+  }
+
+  // Score: each present header = ~10 points, HSTS + CSP weighted more
+  let score = 40 // base
+  if (csp && !csp.includes('unsafe-inline')) score += 15
+  else if (csp) score += 7
+  if (hsts) score += 15
+  if (xfo) score += 7
+  if (xcto) score += 7
+  if (rp) score += 5
+  if (pp) score += 5
+  if (coop) score += 4
+  if (corp) score += 2
+
+  // SSL
+  const tlsVersion = get('x-tls-version') || (scraped.url.startsWith('https') ? '1.2+' : 'N/A')
+  const hstsMaxAge = hsts.match(/max-age=(\d+)/)?.[1] || 'Unknown'
+  const grade = score >= 90 ? 'A+' : score >= 80 ? 'A' : score >= 65 ? 'B' : score >= 50 ? 'C' : 'F'
+
+  // Vulnerabilities from real header data
+  const vulns: Vulnerability[] = []
+  let vulnId = 1
+  const vid = () => `VULN-${String(vulnId++).padStart(3, '0')}`
+
+  if (!csp) vulns.push({
+    id: vid(), title: 'Missing Content-Security-Policy header',
+    severity: 'high', category: 'OWASP A05 Security Misconfiguration',
+    description: 'No CSP header detected. This allows execution of arbitrary inline scripts and resources from any origin, exposing the site to XSS attacks.',
+    evidence: 'content-security-policy header absent from HTTP response',
+    cvss: '7.2', cwe: 'CWE-693',
+    affected: 'All pages — HTTP response headers',
+    solution: `Add to next.config.ts:\nasync headers() {\n  return [{ source: '/(.*)', headers: [{ key: 'Content-Security-Policy', value: "default-src 'self'; script-src 'self' 'nonce-{nonce}'" }] }]\n}`,
+    references: ['https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP', 'OWASP A05:2021'],
+  })
+
+  if (csp?.includes('unsafe-inline')) vulns.push({
+    id: vid(), title: "CSP allows 'unsafe-inline' scripts",
+    severity: 'medium', category: 'OWASP A05 Security Misconfiguration',
+    description: "The Content-Security-Policy header includes 'unsafe-inline', which negates most XSS protections by allowing inline script execution.",
+    evidence: `content-security-policy: ${csp.slice(0, 120)}`,
+    cvss: '5.4', cwe: 'CWE-693',
+    affected: 'Content-Security-Policy header',
+    solution: "Replace 'unsafe-inline' with nonces or hashes. Use __webpack_nonce__ in Next.js with middleware to inject per-request nonces.",
+    references: ['https://web.dev/strict-csp/', 'CSP Level 3 spec'],
+  })
+
+  if (!hsts) vulns.push({
+    id: vid(), title: 'Missing Strict-Transport-Security (HSTS)',
+    severity: 'high', category: 'OWASP A02 Cryptographic Failures',
+    description: 'No HSTS header found. Browsers may accept HTTP connections, enabling downgrade attacks and SSL stripping.',
+    evidence: 'strict-transport-security header absent from HTTP response',
+    cvss: '6.5', cwe: 'CWE-319',
+    affected: 'All HTTPS endpoints',
+    solution: 'Add header: Strict-Transport-Security: max-age=31536000; includeSubDomains; preload',
+    references: ['https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security', 'OWASP A02:2021'],
+  })
+
+  if (hsts && parseInt(hstsMaxAge) < 31536000) vulns.push({
+    id: vid(), title: 'HSTS max-age too short',
+    severity: 'low', category: 'OWASP A02 Cryptographic Failures',
+    description: `HSTS max-age is set to ${hstsMaxAge}s, below the recommended 31536000s (1 year). Short max-age reduces the protection window.`,
+    evidence: `strict-transport-security: ${hsts}`,
+    cvss: '3.1', cwe: 'CWE-319',
+    affected: 'Strict-Transport-Security header',
+    solution: 'Set max-age=31536000; includeSubDomains; preload and submit to HSTS preload list.',
+    references: ['https://hstspreload.org'],
+  })
+
+  if (!xfo && !coop) vulns.push({
+    id: vid(), title: 'Missing clickjacking protection',
+    severity: 'medium', category: 'OWASP A05 Security Misconfiguration',
+    description: 'Neither X-Frame-Options nor Cross-Origin-Opener-Policy is set. The site can be embedded in iframes by any origin, enabling clickjacking attacks.',
+    evidence: 'x-frame-options and cross-origin-opener-policy headers absent',
+    cvss: '4.3', cwe: 'CWE-1021',
+    affected: 'All pages',
+    solution: "Add: X-Frame-Options: DENY or Cross-Origin-Opener-Policy: same-origin. In Next.js headers config, add { key: 'X-Frame-Options', value: 'DENY' }.",
+    references: ['https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options', 'OWASP A05:2021'],
+  })
+
+  if (!xcto) vulns.push({
+    id: vid(), title: 'Missing X-Content-Type-Options header',
+    severity: 'low', category: 'OWASP A05 Security Misconfiguration',
+    description: 'No X-Content-Type-Options: nosniff header. Browsers may MIME-sniff responses, potentially executing non-script content as scripts.',
+    evidence: 'x-content-type-options header absent',
+    cvss: '3.7', cwe: 'CWE-693',
+    affected: 'All responses',
+    solution: "Add header: { key: 'X-Content-Type-Options', value: 'nosniff' }",
+    references: ['https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options'],
+  })
+
+  if (!rp) vulns.push({
+    id: vid(), title: 'Missing Referrer-Policy header',
+    severity: 'low', category: 'Privacy',
+    description: 'No Referrer-Policy set. Full URLs (including paths and query params) may be sent as Referer headers to third parties, leaking user navigation data.',
+    evidence: 'referrer-policy header absent',
+    cvss: '3.1', cwe: 'CWE-200',
+    affected: 'All outbound requests',
+    solution: "Add: { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' }",
+    references: ['https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Referrer-Policy'],
+  })
+
+  if (!pp) vulns.push({
+    id: vid(), title: 'Missing Permissions-Policy header',
+    severity: 'info', category: 'Privacy',
+    description: 'No Permissions-Policy header. Browser features (camera, microphone, geolocation) are accessible to any embedded third-party script without restriction.',
+    evidence: 'permissions-policy header absent',
+    cvss: '2.5', cwe: 'CWE-276',
+    affected: 'Browser feature access',
+    solution: "Add: { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' }",
+    references: ['https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy'],
+  })
+
+  if (!scraped.url.startsWith('https')) vulns.push({
+    id: vid(), title: 'Site served over HTTP',
+    severity: 'critical', category: 'OWASP A02 Cryptographic Failures',
+    description: 'The site is not using HTTPS. All traffic is transmitted in plaintext, enabling interception, tampering, and credential theft.',
+    evidence: `URL scheme: ${scraped.url.split(':')[0]}`,
+    cvss: '9.1', cwe: 'CWE-319',
+    affected: 'Entire site',
+    solution: 'Enable HTTPS immediately. Redirect all HTTP traffic to HTTPS. Configure HSTS.',
+    references: ['https://developer.mozilla.org/en-US/docs/Glossary/https', 'OWASP A02:2021'],
+  })
+
+  // Server header info disclosure
+  const server = get('server')
+  if (server && (server.includes('/') || /\d/.test(server))) vulns.push({
+    id: vid(), title: 'Server header discloses version information',
+    severity: 'info', category: 'Information Disclosure',
+    description: `The Server header reveals software name and version: "${server}". This information aids attackers in targeting known CVEs.`,
+    evidence: `server: ${server}`,
+    cvss: '2.6', cwe: 'CWE-200',
+    affected: 'Server HTTP header',
+    solution: 'Configure your server to return a generic Server header or suppress it entirely.',
+    references: ['https://owasp.org/www-project-web-security-testing-guide/'],
+  })
+
+  const scoreLabel = score >= 85 ? 'Excellent' : score >= 70 ? 'Good' : score >= 50 ? 'Fair' : score >= 30 ? 'Poor' : 'Critical'
+  const riskLevel = score >= 70 ? 'Low' : score >= 50 ? 'Medium' : score >= 30 ? 'High' : 'Critical'
+
+  return {
+    overallScore: Math.min(score, 100),
+    scoreLabel,
+    riskLevel: riskLevel as 'Low' | 'Medium' | 'High' | 'Critical',
+    headers,
+    ssl: {
+      grade: grade as 'A+' | 'A' | 'B' | 'C' | 'F' | 'Unknown',
+      provider: get('cf-ray') ? 'Cloudflare' : 'Unknown',
+      hsts: !!hsts,
+      hstsMaxAge,
+      tlsVersion,
+    },
+    rateLimit: (get('x-ratelimit-limit') || get('ratelimit-limit')) ? 'detected' as const : 'not detected' as const,
+    botProtection: get('cf-ray') ? 'Cloudflare' : 'Unknown',
+    ddosProtection: get('cf-ray') ? 'Cloudflare' : 'Unknown',
+    vulnerabilities: vulns,
+    recommendations: vulns
+      .filter(v => v.severity === 'critical' || v.severity === 'high')
+      .map(v => v.title)
+      .slice(0, 5),
+  }
+}
+
+// ── Components ────────────────────────────────────────────────────────────────
+
+function detectComponents(scraped: ScrapedData): string[] {
+  const html = scraped.html.toLowerCase()
+  const components: string[] = []
+  if (html.includes('<nav') || html.includes('navbar')) components.push('nav')
+  if (html.includes('hero') || html.includes('<h1')) components.push('hero')
+  if (html.includes('<button') || html.includes('btn')) components.push('buttons')
+  if (html.includes('card') || html.includes('<article')) components.push('cards')
+  if (html.includes('pricing') || html.includes('plan')) components.push('pricing')
+  if (html.includes('<form') || html.includes('input type')) components.push('forms')
+  if (html.includes('<table')) components.push('tables')
+  if (html.includes('testimonial') || html.includes('review')) components.push('testimonials')
+  if (html.includes('faq') || html.includes('accordion')) components.push('accordion')
+  if (html.includes('<footer')) components.push('footer')
+  if (html.includes('modal') || html.includes('dialog')) components.push('modal')
+  if (html.includes('banner') || html.includes('alert')) components.push('alerts')
+  return components
+}
+
+// ── Style detection ───────────────────────────────────────────────────────────
+
+function detectStyle(scraped: ScrapedData, colors: ReturnType<typeof extractColors>, effects: ReturnType<typeof extractEffects>): string {
+  const html = scraped.html.toLowerCase()
+  if (effects.hasGlassmorphism) return 'glassmorphism'
+  if (html.includes('brutalist') || html.includes('brutal')) return 'brutalist'
+  if (colors.background.match(/#(f[0-9a-f]{5}|fff)/i) && !effects.gradients) return 'minimal'
+  if (html.includes('editorial') || html.includes('serif')) return 'editorial'
+  if (effects.gradients && effects.animations !== 'none') return 'playful'
+  if (html.includes('enterprise') || html.includes('corporate')) return 'corporate'
+  return 'minimal'
+}
+
+function buildStyleNotes(style: string, colors: ReturnType<typeof extractColors>, typography: ReturnType<typeof extractTypography>): string {
+  return `${style.charAt(0).toUpperCase() + style.slice(1)} aesthetic with ${colors.primary} as primary color. Typography anchored by ${typography.primaryFont || 'system fonts'}.`
 }
